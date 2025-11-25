@@ -1,13 +1,17 @@
+import dotenv from 'dotenv';
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
+import hardhatVerify from "@nomicfoundation/hardhat-verify";
 import hardhatViem from "@nomicfoundation/hardhat-viem";
 import hardhatViemAssertions from "@nomicfoundation/hardhat-viem-assertions";
 import hardhatNodeTestRunner from "@nomicfoundation/hardhat-node-test-runner";
 import hardhatNetworkHelpers from "@nomicfoundation/hardhat-network-helpers";
 import { configVariable, defineConfig } from "hardhat/config";
 
+dotenv.config();
 
 export default defineConfig({
   plugins: [
+    hardhatVerify,
     hardhatToolboxViemPlugin,
     hardhatViem,
     hardhatViemAssertions,
@@ -38,6 +42,11 @@ export default defineConfig({
       },
     },
   },
+  verify: {
+    etherscan: {
+      apiKey: process.env.POLYGONSCAN_API_KEY
+    },
+  },
   networks: {
     hardhatMainnet: {
       type: "edr-simulated",
@@ -46,6 +55,11 @@ export default defineConfig({
     hardhatOp: {
       type: "edr-simulated",
       chainType: "op",
+    },
+    polygon_amoy: {
+      type: "http",
+      url: "https://rpc-amoy.polygon.technology",
+      accounts: [process.env.PRIVATE_KEY as string]
     },
     sepolia: {
       type: "http",
