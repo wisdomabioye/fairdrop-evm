@@ -113,35 +113,36 @@ contract FairdropAuction {
 
     // ============ Errors ============
 
-    error Unauthorized();
-    error InvalidParameters();
-    error AuctionNotActive();
-    error AuctionAlreadyStarted();
-    error AuctionNotFinalized();
-    error AuctionAlreadyFinalized();
-    error InsufficientSupply();
-    error InvalidPrice();
-    error InvalidQuantity();
-    error AlreadyClaimed();
-    error NothingToClaim();
-    error TransferFailed();
-    error ReentrancyGuard();
+    error Unauthorized(string message);
+    error InvalidParameters(string message);
+    error AuctionNotActive(string message);
+    error AuctionAlreadyStarted(string message);
+    error AuctionNotFinalized(string message);
+    error AuctionAlreadyFinalized(string message);
+    error InsufficientSupply(uint256 requested, uint256 available);
+    error InvalidPrice(uint256 provided, uint256 required);
+    error InvalidQuantity(string message);
+    error AlreadyClaimed(string message);
+    error NothingToClaim(string message);
+    error TransferFailed(string message);
+    error ReentrancyGuard(string message);
+    error InsufficientAuctionTokens(uint256 required, uint256 available);
 
     // ============ Modifiers ============
 
     modifier onlyOwner() {
-        if (msg.sender != owner) revert Unauthorized();
+        if (msg.sender != owner) revert Unauthorized("Only auction owner can call this function");
         _;
     }
 
     modifier auctionActive() {
-        if (status != AuctionStatus.Active) revert AuctionNotActive();
-        if (block.timestamp < startTime || block.timestamp > endTime) revert AuctionNotActive();
+        if (status != AuctionStatus.Active) revert AuctionNotActive("Auction is not active");
+        if (block.timestamp < startTime || block.timestamp > endTime) revert AuctionNotActive("Auction is outside active time window");
         _;
     }
 
     modifier nonReentrant() {
-        if (locked == 1) revert ReentrancyGuard();
+        if (locked == 1) revert ReentrancyGuard("Reentrancy detected");
         locked = 1;
         _;
         locked = 0;
@@ -171,12 +172,12 @@ contract FairdropAuction {
         address _paymentToken
     ) {
         // Validation
-        if (_startPrice <= _floorPrice) revert InvalidParameters();
-        if (_priceDecrement == 0) revert InvalidParameters();
-        if (_priceInterval == 0) revert InvalidParameters();
-        if (_totalSupply == 0) revert InvalidParameters();
-        if (_duration == 0) revert InvalidParameters();
-        if (_auctionToken == address(0)) revert InvalidParameters();
+        if (_startPrice <= _floorPrice) revert InvalidParameters("Start price must be greater than floor price");
+        if (_priceDecrement == 0) revert InvalidParameters("Price decrement must be greater than zero");
+        if (_priceInterval == 0) revert InvalidParameters("Price interval must be greater than zero");
+        if (_totalSupply == 0) revert InvalidParameters("Total supply must be greater than zero");
+        if (_duration == 0) revert InvalidParameters("Duration must be greater than zero");
+        if (_auctionToken == address(0)) revert InvalidParameters("Auction token address cannot be zero");
 
         owner = msg.sender;
         startPrice = _startPrice;
@@ -212,9 +213,31 @@ contract FairdropAuction {
     /**
      * @notice Place a bid in the auction with payment
      * @param quantity Amount of tokens to purchase
+     * @dev For native token payments, send at least the required amount. Overpayment is intentional
+     *      to handle price decreases during transaction execution. Excess will be refunded at claim.
+     *      For ERC20 payments, exact amount will be transferred via transferFrom.
      */
     function placeBid(uint256 quantity) external payable auctionActive nonReentrant {
-        if (quantity == 0) revert InvalidQuantity();
+        if (quantity == 0) revert InvalidQuantity("Bid quantity must be greater than zero");
+
+        // Calculate new total committed
+        uint256 newTotalCommitted;
+        unchecked {
+            // Safe: we check against totalSupply below
+            newTotalCommitted = totalCommitted + quantity;
+        }
+
+        // Check if there's enough supply allocated for auction
+        if (newTotalCommitted > totalSupply) {
+            revert InsufficientSupply(quantity, totalSupply - totalCommitted);
+        }
+
+        // Check if auction contract has enough tokens to fulfill commitments
+        // This prevents accepting bids when auction isn't properly funded
+        uint256 auctionBalance = IERC20(auctionToken).balanceOf(address(this));
+        if (auctionBalance < newTotalCommitted) {
+            revert InsufficientAuctionTokens(newTotalCommitted, auctionBalance);
+        }
 
         uint256 currentPrice = getCurrentPrice();
 
@@ -228,42 +251,38 @@ contract FairdropAuction {
             payment = (currentPrice * quantity) / (10 ** auctionTokenDecimals);
         }
 
-        // Check if there's enough supply
-        uint256 newTotalCommitted;
-        unchecked {
-            // Safe: we check for overflow with totalSupply
-            newTotalCommitted = totalCommitted + quantity;
-        }
-        if (newTotalCommitted > totalSupply) revert InsufficientSupply();
-
         // Handle payment (ETH or ERC20)
         if (paymentToken == address(0)) {
-            // ETH payment
-            if (msg.value != payment) revert InvalidPrice();
+            // ETH payment - must send at least the required amount
+            // Overpayment is intentional to handle descending price during tx execution
+            if (msg.value < payment) revert InvalidPrice(msg.value, payment);
         } else {
             // ERC20 payment
-            if (msg.value != 0) revert InvalidParameters();
+            if (msg.value != 0) revert InvalidParameters("Cannot send ETH when paying with ERC20");
             bool success = IERC20(paymentToken).transferFrom(msg.sender, address(this), payment);
-            if (!success) revert TransferFailed();
+            if (!success) revert TransferFailed("Payment token transfer failed - check allowance");
         }
 
         // Update participant info
+        // For ETH payments, record actual msg.value to account for intentional overpayment
         ParticipantInfo storage participant = participants[msg.sender];
+
+        uint256 actualPayment = paymentToken == address(0) ? msg.value : payment;
 
         unchecked {
             // Safe: overflow would require unrealistic token amounts
             participant.quantity += uint128(quantity);
-            participant.amountPaid += uint128(payment);
+            participant.amountPaid += uint128(actualPayment);
         }
 
         // Update global state
         totalCommitted = newTotalCommitted;
         unchecked {
             // Safe: overflow would require unrealistic payment amounts
-            totalContributed += payment;
+            totalContributed += actualPayment;
         }
 
-        emit BidPlaced(msg.sender, quantity, currentPrice, payment);
+        emit BidPlaced(msg.sender, quantity, currentPrice, actualPayment);
     }
 
     /**
@@ -312,8 +331,8 @@ contract FairdropAuction {
      * @dev Can be called by anyone after auction ends
      */
     function finalizeAuction() external {
-        if (status != AuctionStatus.Active) revert AuctionAlreadyFinalized();
-        if (block.timestamp < endTime) revert AuctionNotFinalized();
+        if (status != AuctionStatus.Active) revert AuctionAlreadyFinalized("Auction has already been finalized or cancelled");
+        if (block.timestamp < endTime) revert AuctionNotFinalized("Auction has not ended yet");
 
         // Set clearing price to current price at auction end (must be before changing status)
         clearingPrice = getCurrentPrice();
@@ -328,17 +347,23 @@ contract FairdropAuction {
      * @dev Participants receive tokens at clearing price and refund for overpayment
      */
     function claim() external nonReentrant {
-        if (status != AuctionStatus.Finalized) revert AuctionNotFinalized();
-        if (hasClaimed[msg.sender]) revert AlreadyClaimed();
+        if (status != AuctionStatus.Finalized) revert AuctionNotFinalized("Auction must be finalized before claiming");
+        if (hasClaimed[msg.sender]) revert AlreadyClaimed("Tokens have already been claimed");
 
         ParticipantInfo storage participant = participants[msg.sender];
 
-        if (participant.quantity == 0) revert NothingToClaim();
+        if (participant.quantity == 0) revert NothingToClaim("No tokens to claim");
 
         hasClaimed[msg.sender] = true;
 
         uint256 tokensToReceive = participant.quantity;
         uint256 amountPaid = participant.amountPaid;
+
+        // Check if auction contract has enough tokens
+        uint256 auctionBalance = IERC20(auctionToken).balanceOf(address(this));
+        if (auctionBalance < tokensToReceive) {
+            revert InsufficientAuctionTokens(tokensToReceive, auctionBalance);
+        }
 
         // Calculate refund (difference between what was paid and clearing price)
         uint256 clearingCost;
@@ -357,18 +382,18 @@ contract FairdropAuction {
 
         // Transfer auction tokens to participant
         bool tokenSuccess = IERC20(auctionToken).transfer(msg.sender, tokensToReceive);
-        if (!tokenSuccess) revert TransferFailed();
+        if (!tokenSuccess) revert TransferFailed("Auction token transfer failed");
 
         // Refund overpayment if any
         if (refund > 0) {
             if (paymentToken == address(0)) {
                 // ETH refund
                 (bool refundSuccess, ) = msg.sender.call{value: refund}("");
-                if (!refundSuccess) revert TransferFailed();
+                if (!refundSuccess) revert TransferFailed("ETH refund failed");
             } else {
                 // ERC20 refund
                 bool refundSuccess = IERC20(paymentToken).transfer(msg.sender, refund);
-                if (!refundSuccess) revert TransferFailed();
+                if (!refundSuccess) revert TransferFailed("Payment token refund failed");
             }
         }
     }
@@ -462,7 +487,7 @@ contract FairdropAuction {
      * @notice Cancel auction (only owner, only before any bids)
      */
     function cancelAuction() external onlyOwner {
-        if (totalCommitted > 0) revert AuctionAlreadyStarted();
+        if (totalCommitted > 0) revert AuctionAlreadyStarted("Cannot cancel auction after bids have been placed");
 
         status = AuctionStatus.Cancelled;
 
@@ -474,7 +499,7 @@ contract FairdropAuction {
      * @dev Transfers total revenue (at clearing price) to owner
      */
     function withdrawProceeds() external onlyOwner nonReentrant {
-        if (status != AuctionStatus.Finalized) revert AuctionNotFinalized();
+        if (status != AuctionStatus.Finalized) revert AuctionNotFinalized("Auction must be finalized before withdrawing proceeds");
 
         // Calculate total proceeds at clearing price
         uint256 proceeds;
@@ -489,11 +514,11 @@ contract FairdropAuction {
         if (paymentToken == address(0)) {
             // ETH proceeds
             (bool success, ) = owner.call{value: proceeds}("");
-            if (!success) revert TransferFailed();
+            if (!success) revert TransferFailed("ETH proceeds transfer failed");
         } else {
             // ERC20 proceeds
             bool success = IERC20(paymentToken).transfer(owner, proceeds);
-            if (!success) revert TransferFailed();
+            if (!success) revert TransferFailed("Payment token proceeds transfer failed");
         }
     }
 
@@ -502,7 +527,7 @@ contract FairdropAuction {
      * @dev Can be called after finalization to recover unsold tokens
      */
     function withdrawUnsoldTokens() external onlyOwner nonReentrant {
-        if (status != AuctionStatus.Finalized) revert AuctionNotFinalized();
+        if (status != AuctionStatus.Finalized) revert AuctionNotFinalized("Auction must be finalized before withdrawing unsold tokens");
 
         uint256 unsold;
         unchecked {
@@ -513,7 +538,7 @@ contract FairdropAuction {
         if (unsold == 0) return;
 
         bool success = IERC20(auctionToken).transfer(owner, unsold);
-        if (!success) revert TransferFailed();
+        if (!success) revert TransferFailed("Unsold token transfer failed");
     }
 
     /**
@@ -521,12 +546,12 @@ contract FairdropAuction {
      * @dev Owner can recover auction tokens if auction is cancelled
      */
     function emergencyWithdraw() external onlyOwner nonReentrant {
-        if (status != AuctionStatus.Cancelled) revert Unauthorized();
+        if (status != AuctionStatus.Cancelled) revert Unauthorized("Auction must be cancelled to use emergency withdraw");
 
         uint256 balance = IERC20(auctionToken).balanceOf(address(this));
         if (balance > 0) {
             bool success = IERC20(auctionToken).transfer(owner, balance);
-            if (!success) revert TransferFailed();
+            if (!success) revert TransferFailed("Emergency withdrawal failed");
         }
     }
 }

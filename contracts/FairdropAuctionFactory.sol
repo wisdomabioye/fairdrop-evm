@@ -47,15 +47,15 @@ contract FairdropAuctionFactory {
 
     // ============ Errors ============
 
-    error Unauthorized();
-    error InvalidFee();
-    error InvalidAddress();
-    error AuctionDoesNotExist();
+    error Unauthorized(string message);
+    error InvalidFee(string message);
+    error InvalidAddress(string message);
+    error AuctionDoesNotExist(string message);
 
     // ============ Modifiers ============
 
     modifier onlyAdmin() {
-        if (msg.sender != admin) revert Unauthorized();
+        if (msg.sender != admin) revert Unauthorized("Only admin can call this function");
         _;
     }
 
@@ -67,8 +67,8 @@ contract FairdropAuctionFactory {
      * @param _feeRecipient Address to receive platform fees
      */
     constructor(uint256 _platformFeePercent, address _feeRecipient) {
-        if (_platformFeePercent < 100 || _platformFeePercent > 300) revert InvalidFee(); // Min 1%, Max 3%
-        if (_feeRecipient == address(0)) revert InvalidAddress();
+        if (_platformFeePercent < 100 || _platformFeePercent > 300) revert InvalidFee("Fee must be between 1% and 3% (100-300 basis points)");
+        if (_feeRecipient == address(0)) revert InvalidAddress("Fee recipient cannot be zero address");
 
         admin = msg.sender;
         platformFeePercent = _platformFeePercent;
@@ -163,7 +163,7 @@ contract FairdropAuctionFactory {
      * @return Auction address
      */
     function getAuction(uint256 auctionId) external view returns (address) {
-        if (auctionId >= auctionCount) revert AuctionDoesNotExist();
+        if (auctionId >= auctionCount) revert AuctionDoesNotExist("Auction ID does not exist");
         return auctions[auctionId];
     }
 
@@ -227,7 +227,7 @@ contract FairdropAuctionFactory {
      * @param _newFee New fee in basis points (100 = 1%)
      */
     function updatePlatformFee(uint256 _newFee) external onlyAdmin {
-        if (_newFee < 100 || _newFee > 300) revert InvalidFee(); // Min 1%, Max 3%
+        if (_newFee < 100 || _newFee > 300) revert InvalidFee("Fee must be between 1% and 3% (100-300 basis points)");
 
         uint256 oldFee = platformFeePercent;
         platformFeePercent = _newFee;
@@ -240,7 +240,7 @@ contract FairdropAuctionFactory {
      * @param _newRecipient New fee recipient address
      */
     function updateFeeRecipient(address _newRecipient) external onlyAdmin {
-        if (_newRecipient == address(0)) revert InvalidAddress();
+        if (_newRecipient == address(0)) revert InvalidAddress("Fee recipient cannot be zero address");
 
         address oldRecipient = feeRecipient;
         feeRecipient = _newRecipient;
@@ -253,7 +253,7 @@ contract FairdropAuctionFactory {
      * @param _newAdmin New admin address
      */
     function transferAdmin(address _newAdmin) external onlyAdmin {
-        if (_newAdmin == address(0)) revert InvalidAddress();
+        if (_newAdmin == address(0)) revert InvalidAddress("Admin address cannot be zero address");
 
         address oldAdmin = admin;
         admin = _newAdmin;
