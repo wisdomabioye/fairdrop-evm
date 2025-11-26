@@ -361,7 +361,7 @@ npx hardhat test
 
 ## Deployment Checklist
 
-- [ ] Audit contracts (recommended for production)
+- [ ] Audit contracts
 - [ ] Configure platform fee (1-3%)
 - [ ] Set fee recipient address
 - [ ] Deploy factory contract
